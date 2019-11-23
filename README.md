@@ -3,8 +3,7 @@
 
 Implementation of a parallelized version of the K-Means algorithm, based on
 Spark and written in python.  
-Both the parallelized and a centralized version are available as jupyter
-notebooks and python files.  
+The work is available as both as a jupyter notebook and a python file.
 Testing is done using the famous Iris dataset.
 
 ## Author
