@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
+
 
 import time
 import pyspark
@@ -11,15 +10,16 @@ from sklearn import preprocessing
 from sklearn.cluster import KMeans
 from scipy.interpolate import make_interp_spline
 
+
 FILE_PATH = '../data/iris'
-OUT_PATH = '../out/'
+OUT_PATH = '../out_py/'
 IMG_FORMAT = 'png'
 N_WORKERS = 8
 N_PARTITIONS = 8
 
 
-def read_file(file_path):
-    rdd = sc.textFile(file_path, N_PARTITIONS)
+def read_file(file_path, n_part):
+    rdd = sc.textFile(file_path, n_part)
     
     rdd = rdd.map(
         lambda x:
@@ -80,24 +80,22 @@ def init_centroids(rdd, k, random=True):
     
     
 def calc_distance(c, x, dist_type='euclidean'):
-    print(dist_type)
     if dist_type == 'euclidean':
         return np.linalg.norm(c - x)
     else:
         raise Exception('Distance Type not recognized.')
-        sys.exit()
     
     
-def assign_cluster(centroids, x, *args, **kwargs):
-    distances = [calc_distance(c, x, dist_type=args[0]) for c in centroids]
-    min_index = np.argmin(distances)    
+def assign_cluster(centroids, x, dist_type):
+    distances = [calc_distance(c, x, dist_type=dist_type) for c in centroids]
+    min_index = np.argmin(distances)
     return min_index
 
 
-def redefine_clusters(rdd, centroids, *args, **kwargs):
+def redefine_clusters(rdd, centroids, dist_type):
     rdd = rdd.map(
         lambda x: (
-            assign_cluster(centroids, x[1], args[0]),
+            assign_cluster(centroids, x[1], dist_type),
             x[1]
         )
     )
@@ -128,10 +126,10 @@ def calculate_centroids(rdd):
     return np.array(centroids)
 
 
-def cluster_variance(rdd, centroids, *args, **kwargs):
+def cluster_variance(rdd, centroids, dist_type):
     variance = rdd.map(
         lambda x: 
-            calc_distance(centroids[x[0]], x[1], args[0])
+            calc_distance(centroids[x[0]], x[1], dist_type)
     ).reduce(
         lambda x, y:
             x + y
@@ -141,7 +139,7 @@ def cluster_variance(rdd, centroids, *args, **kwargs):
 
 
 def k_means(rdd_x, k, iterations=20, tolerance=0.001, 
-            n_init=5, random_init=True, 
+            n_init=5, random_init=True,
             distance_metric='euclidean', verbose=False):
     if k > rdd_x.count():
         print('Invalid K: too big!')
@@ -153,7 +151,7 @@ def k_means(rdd_x, k, iterations=20, tolerance=0.001,
     cent_arr = []
     variance_arr = []
     
-    if random_init == False:
+    if not random_init:
         n_init = 1
     
     for trial in range(n_init):
@@ -161,7 +159,6 @@ def k_means(rdd_x, k, iterations=20, tolerance=0.001,
 
         centroids = init_centroids(rdd_x, k, random=random_init)
         rdd = init_rdd(rdd_x)
-        n_rows = rdd.count()
         for it in range(iterations):
             rdd = redefine_clusters(rdd, centroids, distance_metric)
 
@@ -171,7 +168,7 @@ def k_means(rdd_x, k, iterations=20, tolerance=0.001,
                 new_centroids - centroids[:len(new_centroids)]
             )
             
-            if (delta < tolerance):
+            if delta < tolerance:
                 print('%d. Converged.\t|\t' % (trial + 1), end='')
                 break
             centroids = new_centroids
@@ -200,98 +197,16 @@ def k_means(rdd_x, k, iterations=20, tolerance=0.001,
     print('\nFinished in %0.2f s.\t|\tChosen init %d.' %
           (finish_time, (index + 1)))
     if verbose:
-        [print('Cluster %d: %d' % (n, y.count(n)))             for n in sorted(np.unique(y))]
+        [print('Cluster %d: %d' % (n, y.count(n))) for n in sorted(np.unique(y))]
         
     return y, cent_arr[index], finish_time
-
-
-sc = pyspark.SparkContext('local[' + str(N_WORKERS) + ']')
-
-rdd_x, rdd_y = read_file(FILE_PATH)
-rdd_x = standardise(rdd_x)
-
-
-y, ctrd, tot_time = k_means(rdd_x, 3, random_init=True)
-
-
-df = pd.read_csv(FILE_PATH + '.csv').iloc[:,:-1]
-x = df.values
-standard_scaler = preprocessing.StandardScaler()
-x = standard_scaler.fit_transform(x)
-
-km = KMeans(n_clusters=3)
-km.fit(x)
-y_kmeans = km.predict(x)
-
-plt.scatter(x[:, 0], x[:, 1], c=y_kmeans, s=50, cmap='viridis')
-ys = list(y_kmeans)
-print('0: %2d, 1: %2d, 2: %2d' % (ys.count(0), ys.count(1), ys.count(2)))
-
-centers = km.cluster_centers_
-plt.scatter(centers[:, 0], centers[:, 1], c='black', s=200, alpha=0.5)
-
-
-plt.scatter(x[:, 0], x[:, 1], c=y, s=50, cmap='viridis')
-plt.scatter(ctrd[:, 0], ctrd[:, 1], c='black', s=200, alpha=0.5)
-
-
-centr_sklearn = np.array(sorted(centers, key=itemgetter(0)))
-centr_this = np.array(sorted(ctrd, key=itemgetter(0)))
-                       
-print('Total centroid distance error: %0.4f' %
-       np.sum(abs(centr_this - centr_sklearn)))
-
-
-worker_list = list(range(1, N_WORKERS + 1))
-time_list = []
-n_init = 10
-
-for workers in worker_list:
-    if 'sc' in locals():
-        sc.stop()
-    sc = pyspark.SparkContext('local[' + str(workers) + ']')
-
-    rdd, _ = read_file(FILE_PATH)
-    rdd = standardise(rdd)
-
-    _, _, tmp_time = k_means(rdd, 3, n_init=n_init)
-    time_list.append(tmp_time)
-    print('-----')
-print('Ended.')
-
-
-def performance_curve(time_array, n_init, save=False, interpolate=True):
-    t = np.array(time_array.copy())
-    x_axis = [x for x in range(1, N_WORKERS + 1)]
-    
-    if interpolate: 
-        spl = make_interp_spline(x_axis, t, k=3)
-        x_axis = np.linspace(1, N_WORKERS, 300)
-        t = spl(x_axis)
-
-    plt.plot(x_axis, t, linewidth=2)
-    plt.gcf().subplots_adjust(bottom=0.1)
-    plt.style.use('seaborn-darkgrid')
-    plt.title('Performance Curve')
-    plt.xlabel('Workers')
-    plt.ylabel('Time (s)')
-    if save:
-        if interpolate:
-            name = 'performance_curve_int.'
-        else:
-            name = 'performance_curve.'
-        plt.savefig(OUT_PATH + str(n_init)  + 'it-' + name + IMG_FORMAT)
-    plt.show()
-
-
-performance_curve(time_list, n_init, save=True, interpolate=False)
 
 
 def speed_up_curve(time_array, n_init, save=False, interpolate=True):
     t = [time_array[0]/x for x in time_array]
     x_axis = [x for x in range(1, N_WORKERS + 1)]
-    
-    if interpolate: 
+
+    if interpolate:
         spl = make_interp_spline(x_axis, t, k=3)
         x_axis = np.linspace(1, N_WORKERS, 300)
         t = spl(x_axis)
@@ -311,4 +226,61 @@ def speed_up_curve(time_array, n_init, save=False, interpolate=True):
     plt.show()
 
 
-speed_up_curve(time_list, n_init)
+def performance_curve(time_array, n_init, save=False, interpolate=True):
+    t = np.array(time_array.copy())
+    x_axis = [x for x in range(1, N_WORKERS + 1)]
+
+    if interpolate:
+        spl = make_interp_spline(x_axis, t, k=3)
+        x_axis = np.linspace(1, N_WORKERS, 300)
+        t = spl(x_axis)
+
+    plt.plot(x_axis, t, linewidth=2)
+    plt.gcf().subplots_adjust(bottom=0.1)
+    plt.style.use('seaborn-darkgrid')
+    plt.title('Performance Curve')
+    plt.xlabel('Workers')
+    plt.ylabel('Time (s)')
+    if save:
+        if interpolate:
+            name = 'performance_curve_int.'
+        else:
+            name = 'performance_curve.'
+        plt.savefig(OUT_PATH + str(n_init) + 'it-' + name + IMG_FORMAT)
+    plt.show()
+
+
+if __name__ == '__main__':
+
+    perf = True
+
+    if not perf:
+        sc = pyspark.SparkContext('local[' + str(N_WORKERS) + ']')
+        rdd_x, rdd_y = read_file(FILE_PATH)
+        rdd_x = standardise(rdd_x)
+
+        y, ctrd, tot_time = k_means(rdd_x, 3, random_init=True)
+
+    else:
+
+        worker_list = list(range(1, N_WORKERS + 1))
+        time_list = []
+        n_init = 10
+
+        for workers in worker_list:
+            print('Starting with %d workers' % (worker_list.index(workers) + 1))
+            if 'sc' in locals():
+                sc.stop()
+            sc = pyspark.SparkContext('local[' + str(workers) + ']')
+
+            rdd, _ = read_file(FILE_PATH, 1)
+            rdd = standardise(rdd)
+
+            _, _, tmp_time = k_means(rdd, 3, n_init=n_init, verbose=False)
+            time_list.append(tmp_time)
+            print('-----')
+        print('Ended.')
+
+        performance_curve(time_list, n_init, save=True, interpolate=False)
+
+        speed_up_curve(time_list, n_init, save=True, interpolate=False)
